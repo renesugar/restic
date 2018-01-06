@@ -339,7 +339,7 @@ func TestNewArchiverSaveDir(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			node, err := arch.SaveDir(ctx, "/", fi, test.target)
+			node, err := arch.SaveDir(ctx, "/", fi, test.target, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

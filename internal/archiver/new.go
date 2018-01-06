@@ -112,8 +112,24 @@ func (arch *NewArchiver) SaveFile(ctx context.Context, filename string) (*restic
 	return node, nil
 }
 
+// loadSubtree tries to load the subtree referenced by node. In case of an error, nil is returned.
+func (arch *NewArchiver) loadSubtree(ctx context.Context, node *restic.Node) *restic.Tree {
+	if node == nil || node.Type != "dir" || node.Subtree == nil {
+		return nil
+	}
+
+	tree, err := arch.Repo.LoadTree(ctx, *node.Subtree)
+	if err != nil {
+		debug.Log("unable to load tree %v: %v", node.Subtree.Str(), err)
+		// TODO: handle error
+		return nil
+	}
+
+	return tree
+}
+
 // saveDir stores a directory in the repo and returns the tree.
-func (arch *NewArchiver) saveDir(ctx context.Context, prefix string, fi os.FileInfo, dir string) (*restic.Tree, error) {
+func (arch *NewArchiver) saveDir(ctx context.Context, prefix string, fi os.FileInfo, dir string, previous *restic.Tree) (*restic.Tree, error) {
 	debug.Log("%v %v", prefix, dir)
 
 	f, err := arch.FS.Open(dir)
@@ -145,12 +161,15 @@ func (arch *NewArchiver) saveDir(ctx context.Context, prefix string, fi os.FileI
 			continue
 		}
 
+		oldNode := previous.Find(fi.Name())
+
 		var node *restic.Node
 		switch {
 		case fs.IsRegularFile(fi):
 			node, err = arch.SaveFile(ctx, pathname)
 		case fi.Mode().IsDir():
-			node, err = arch.SaveDir(ctx, path.Join(prefix, fi.Name()), fi, pathname)
+			oldSubtree := arch.loadSubtree(ctx, oldNode)
+			node, err = arch.SaveDir(ctx, path.Join(prefix, fi.Name()), fi, pathname, oldSubtree)
 		default:
 			node, err = restic.NodeFromFileInfo(pathname, fi)
 		}
@@ -169,7 +188,7 @@ func (arch *NewArchiver) saveDir(ctx context.Context, prefix string, fi os.FileI
 }
 
 // SaveDir stores a directory in the repo and returns the node.
-func (arch *NewArchiver) SaveDir(ctx context.Context, prefix string, fi os.FileInfo, dir string) (*restic.Node, error) {
+func (arch *NewArchiver) SaveDir(ctx context.Context, prefix string, fi os.FileInfo, dir string, previous *restic.Tree) (*restic.Node, error) {
 	debug.Log("%v %v", prefix, dir)
 
 	treeNode, err := restic.NodeFromFileInfo(dir, fi)
@@ -177,7 +196,7 @@ func (arch *NewArchiver) SaveDir(ctx context.Context, prefix string, fi os.FileI
 		return nil, err
 	}
 
-	tree, err := arch.saveDir(ctx, prefix, fi, dir)
+	tree, err := arch.saveDir(ctx, prefix, fi, dir, previous)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +220,7 @@ type SnapshotOptions struct {
 }
 
 // Save saves a target (file or directory) to the repo.
-func (arch *NewArchiver) Save(ctx context.Context, prefix, target string) (node *restic.Node, err error) {
+func (arch *NewArchiver) Save(ctx context.Context, prefix, target string, previous *restic.Node) (node *restic.Node, err error) {
 	debug.Log("%v target %q", prefix, target)
 	fi, err := arch.FS.Lstat(target)
 	if err != nil {
@@ -222,7 +241,8 @@ func (arch *NewArchiver) Save(ctx context.Context, prefix, target string) (node 
 	case fs.IsRegularFile(fi):
 		node, err = arch.SaveFile(ctx, target)
 	case fi.IsDir():
-		node, err = arch.SaveDir(ctx, prefix, fi, target)
+		oldSubtree := arch.loadSubtree(ctx, previous)
+		node, err = arch.SaveDir(ctx, prefix, fi, target, oldSubtree)
 	default:
 		node, err = restic.NodeFromFileInfo(target, fi)
 	}
@@ -262,7 +282,7 @@ func fileChanged(fi os.FileInfo, node *restic.Node) bool {
 }
 
 // SaveArchiveTree stores an ArchiveTree in the repo, returned is the tree.
-func (arch *NewArchiver) SaveArchiveTree(ctx context.Context, prefix string, atree *ArchiveTree) (*restic.Tree, error) {
+func (arch *NewArchiver) SaveArchiveTree(ctx context.Context, prefix string, atree *ArchiveTree, previous *restic.Tree) (*restic.Tree, error) {
 	debug.Log("%v (%v nodes)", prefix, len(atree.Nodes))
 
 	tree := restic.NewTree()
@@ -272,7 +292,7 @@ func (arch *NewArchiver) SaveArchiveTree(ctx context.Context, prefix string, atr
 
 		// this is a leaf node
 		if subatree.Path != "" {
-			node, err := arch.Save(ctx, path.Join(prefix, name), subatree.Path)
+			node, err := arch.Save(ctx, path.Join(prefix, name), subatree.Path, previous.Find(name))
 			if err != nil {
 				return nil, err
 			}
@@ -292,8 +312,10 @@ func (arch *NewArchiver) SaveArchiveTree(ctx context.Context, prefix string, atr
 			continue
 		}
 
+		oldSubtree := arch.loadSubtree(ctx, previous.Find(name))
+
 		// not a leaf node, archive subtree
-		subtree, err := arch.SaveArchiveTree(ctx, path.Join(prefix, name), &subatree)
+		subtree, err := arch.SaveArchiveTree(ctx, path.Join(prefix, name), &subatree, oldSubtree)
 		if err != nil {
 			return nil, err
 		}
@@ -412,7 +434,7 @@ func (arch *NewArchiver) Snapshot(ctx context.Context, targets []string, opts Op
 		return nil, restic.ID{}, err
 	}
 
-	tree, err := arch.SaveArchiveTree(ctx, "/", atree)
+	tree, err := arch.SaveArchiveTree(ctx, "/", atree, nil)
 	if err != nil {
 		return nil, restic.ID{}, err
 	}
