@@ -229,6 +229,37 @@ func (arch *NewArchiver) Save(ctx context.Context, prefix, target string) (node 
 	return node, err
 }
 
+// fileChanged returns true if the file's content has changed since the node
+// was created.
+func fileChanged(fi os.FileInfo, node *restic.Node) bool {
+	if node == nil {
+		return true
+	}
+
+	// check type change
+	if node.Type != "file" {
+		return true
+	}
+
+	// check modification timestamp
+	if !fi.ModTime().Equal(node.ModTime) {
+		return true
+	}
+
+	// check size
+	extFI := fs.ExtendedStat(fi)
+	if uint64(fi.Size()) != node.Size || uint64(extFI.Size) != node.Size {
+		return true
+	}
+
+	// check inode
+	if node.Inode != extFI.Inode {
+		return true
+	}
+
+	return false
+}
+
 func (arch *NewArchiver) saveArchiveTree(ctx context.Context, prefix string, atree *ArchiveTree) (*restic.Tree, error) {
 	debug.Log("%v (%v nodes)", prefix, len(atree.Nodes))
 

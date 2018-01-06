@@ -2,8 +2,10 @@ package archiver
 
 import (
 	"context"
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -75,6 +77,142 @@ func TestNewArchiverSaveFile(t *testing.T) {
 			TestEnsureFileContent(ctx, t, repo, "file", node, testfile)
 		})
 	}
+}
+
+func save(t testing.TB, filename string, data []byte) {
+	err := ioutil.WriteFile(filename, data, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func lstat(t testing.TB, name string) os.FileInfo {
+	fi, err := os.Lstat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return fi
+}
+
+func setTimestamp(t testing.TB, filename string, atime, mtime time.Time) {
+	var utimes = [...]syscall.Timespec{
+		syscall.NsecToTimespec(atime.UnixNano()),
+		syscall.NsecToTimespec(mtime.UnixNano()),
+	}
+
+	err := syscall.UtimesNano(filename, utimes[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func remove(t testing.TB, filename string) {
+	err := os.Remove(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func nodeFromFI(t testing.TB, filename string, fi os.FileInfo) *restic.Node {
+	node, err := restic.NodeFromFileInfo(filename, fi)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return node
+}
+
+func TestFileChanged(t *testing.T) {
+	var defaultContent = []byte("foobar")
+
+	var tests = []struct {
+		Name    string
+		Content []byte
+		Modify  func(t testing.TB, filename string)
+	}{
+		{
+			Name: "same-content",
+			Modify: func(t testing.TB, filename string) {
+				time.Sleep(5 * time.Millisecond)
+				save(t, filename, defaultContent)
+			},
+		},
+		{
+			Name: "other-content",
+			Modify: func(t testing.TB, filename string) {
+				time.Sleep(5 * time.Millisecond)
+				save(t, filename, []byte("xxxxxx"))
+			},
+		},
+		{
+			Name: "longer-content",
+			Modify: func(t testing.TB, filename string) {
+				save(t, filename, []byte("xxxxxxxxxxxxxxxxxxxxxx"))
+			},
+		},
+		{
+			Name: "new-file",
+			Modify: func(t testing.TB, filename string) {
+				remove(t, filename)
+				save(t, filename, defaultContent)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.Name, func(t *testing.T) {
+			tempdir, cleanup := restictest.TempDir(t)
+			defer cleanup()
+
+			filename := filepath.Join(tempdir, "file")
+			content := defaultContent
+			if test.Content != nil {
+				content = test.Content
+			}
+			save(t, filename, content)
+
+			save(t, filename, []byte("foobar"))
+			fiBefore := lstat(t, filename)
+			node := nodeFromFI(t, filename, fiBefore)
+
+			if fileChanged(fiBefore, node) {
+				t.Fatalf("unchanged file detected as changed")
+			}
+
+			test.Modify(t, filename)
+
+			fiAfter := lstat(t, filename)
+			if !fileChanged(fiAfter, node) {
+				t.Fatalf("modified file detected as unchanged")
+			}
+		})
+	}
+}
+
+func TestFilChangedSpecialCases(t *testing.T) {
+	tempdir, cleanup := restictest.TempDir(t)
+	defer cleanup()
+
+	filename := filepath.Join(tempdir, "file")
+	content := []byte("foobar")
+	save(t, filename, content)
+
+	t.Run("nil-node", func(t *testing.T) {
+		fi := lstat(t, filename)
+		if !fileChanged(fi, nil) {
+			t.Fatal("nil node detected as unchanged")
+		}
+	})
+
+	t.Run("type-change", func(t *testing.T) {
+		fi := lstat(t, filename)
+		node := nodeFromFI(t, filename, fi)
+		node.Type = "symlink"
+		if !fileChanged(fi, node) {
+			t.Fatal("node with changed type detected as unchanged")
+		}
+	})
 }
 
 func TestNewArchiverSaveDir(t *testing.T) {
