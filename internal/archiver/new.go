@@ -112,7 +112,8 @@ func (arch *NewArchiver) SaveFile(ctx context.Context, filename string) (*restic
 	return node, nil
 }
 
-func (arch *NewArchiver) saveTree(ctx context.Context, prefix string, fi os.FileInfo, dir string) (*restic.Tree, error) {
+// saveDir stores a directory in the repo and returns the tree.
+func (arch *NewArchiver) saveDir(ctx context.Context, prefix string, fi os.FileInfo, dir string) (*restic.Tree, error) {
 	debug.Log("%v %v", prefix, dir)
 
 	f, err := arch.FS.Open(dir)
@@ -167,7 +168,7 @@ func (arch *NewArchiver) saveTree(ctx context.Context, prefix string, fi os.File
 	return tree, nil
 }
 
-// SaveDir reads a directory and saves it to the repo.
+// SaveDir stores a directory in the repo and returns the node.
 func (arch *NewArchiver) SaveDir(ctx context.Context, prefix string, fi os.FileInfo, dir string) (*restic.Node, error) {
 	debug.Log("%v %v", prefix, dir)
 
@@ -176,7 +177,7 @@ func (arch *NewArchiver) SaveDir(ctx context.Context, prefix string, fi os.FileI
 		return nil, err
 	}
 
-	tree, err := arch.saveTree(ctx, prefix, fi, dir)
+	tree, err := arch.saveDir(ctx, prefix, fi, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +261,8 @@ func fileChanged(fi os.FileInfo, node *restic.Node) bool {
 	return false
 }
 
-func (arch *NewArchiver) saveArchiveTree(ctx context.Context, prefix string, atree *ArchiveTree) (*restic.Tree, error) {
+// SaveArchiveTree stores an ArchiveTree in the repo, returned is the tree.
+func (arch *NewArchiver) SaveArchiveTree(ctx context.Context, prefix string, atree *ArchiveTree) (*restic.Tree, error) {
 	debug.Log("%v (%v nodes)", prefix, len(atree.Nodes))
 
 	tree := restic.NewTree()
@@ -291,7 +293,7 @@ func (arch *NewArchiver) saveArchiveTree(ctx context.Context, prefix string, atr
 		}
 
 		// not a leaf node, archive subtree
-		subtree, err := arch.saveArchiveTree(ctx, path.Join(prefix, name), &subatree)
+		subtree, err := arch.SaveArchiveTree(ctx, path.Join(prefix, name), &subatree)
 		if err != nil {
 			return nil, err
 		}
@@ -410,7 +412,7 @@ func (arch *NewArchiver) Snapshot(ctx context.Context, targets []string, opts Op
 		return nil, restic.ID{}, err
 	}
 
-	tree, err := arch.saveArchiveTree(ctx, "/", atree)
+	tree, err := arch.SaveArchiveTree(ctx, "/", atree)
 	if err != nil {
 		return nil, restic.ID{}, err
 	}
