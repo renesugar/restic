@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -808,6 +809,144 @@ func TestNewArchiverSnapshotSelect(t *testing.T) {
 				want = test.src
 			}
 			TestEnsureSnapshot(t, repo, snapshotID, want)
+
+			checker.TestCheckRepo(t, repo)
+		})
+	}
+}
+
+// MockFS keeps track which files are read.
+type MockFS struct {
+	fs.FS
+
+	m         sync.Mutex
+	bytesRead map[string]int // tracks bytes read from all opened files
+}
+
+func (m *MockFS) Open(name string) (fs.File, error) {
+	f, err := m.FS.Open(name)
+	if err != nil {
+		return f, err
+	}
+
+	return MockFile{File: f, fs: m}, nil
+}
+
+func (m *MockFS) OpenFile(name string, flag int, perm os.FileMode) (fs.File, error) {
+	f, err := m.FS.OpenFile(name, flag, perm)
+	if err != nil {
+		return f, err
+	}
+
+	return MockFile{File: f, fs: m}, nil
+}
+
+type MockFile struct {
+	fs.File
+
+	fs *MockFS
+}
+
+func (f MockFile) Read(p []byte) (int, error) {
+	n, err := f.File.Read(p)
+	if n > 0 {
+		f.fs.m.Lock()
+		f.fs.bytesRead[f.Name()] += n
+		f.fs.m.Unlock()
+	}
+	return n, err
+}
+
+func TestNewArchiverParent(t *testing.T) {
+	var tests = []struct {
+		src  TestDir
+		read map[string]int // tracks number of times a file must have been read
+	}{
+		{
+			src: TestDir{
+				"targetfile": TestFile{Content: string(restictest.Random(888, 2*1024*1024+5000))},
+			},
+			read: map[string]int{
+				"targetfile": 1,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run("", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			tempdir, repo, cleanup := prepareTempdirRepoSrc(t, test.src)
+			defer cleanup()
+
+			testFS := &MockFS{
+				FS:        fs.Local{},
+				bytesRead: make(map[string]int),
+			}
+
+			arch := NewArchiver{
+				Repo: repo,
+				Select: func(string, os.FileInfo) bool {
+					return true
+				},
+				FS: testFS,
+			}
+
+			back := fs.TestChdir(t, tempdir)
+			defer back()
+
+			_, firstSnapshotID, err := arch.Snapshot(ctx, []string{"."}, Options{Time: time.Now()})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			t.Logf("first backup saved as %v", firstSnapshotID.Str())
+			t.Logf("testfs: %v", testFS)
+
+			// check that all files have been read exactly once
+			TestWalkFiles(t, ".", test.src, func(filename string, item interface{}) error {
+				file, ok := item.(TestFile)
+				if !ok {
+					return nil
+				}
+
+				n, ok := testFS.bytesRead[filename]
+				if !ok {
+					t.Fatalf("file %v was not read at all", filename)
+				}
+
+				if n != len(file.Content) {
+					t.Fatalf("file %v: read %v bytes, wanted %v bytes", filename, n, len(file.Content))
+				}
+				return nil
+			})
+
+			_, secondSnapshotID, err := arch.Snapshot(ctx, []string{"."}, Options{Time: time.Now()})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// check that all files still been read exactly once
+			TestWalkFiles(t, ".", test.src, func(filename string, item interface{}) error {
+				file, ok := item.(TestFile)
+				if !ok {
+					return nil
+				}
+
+				n, ok := testFS.bytesRead[filename]
+				if !ok {
+					t.Fatalf("file %v was not read at all", filename)
+				}
+
+				if n != len(file.Content) {
+					t.Fatalf("file %v: read %v bytes, wanted %v bytes", filename, n, len(file.Content))
+				}
+				return nil
+			})
+
+			t.Logf("second backup saved as %v", secondSnapshotID.Str())
+			t.Logf("testfs: %v", testFS)
 
 			checker.TestCheckRepo(t, repo)
 		})
