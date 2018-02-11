@@ -166,7 +166,14 @@ func (arch *NewArchiver) saveDir(ctx context.Context, prefix string, fi os.FileI
 		var node *restic.Node
 		switch {
 		case fs.IsRegularFile(fi):
-			node, err = arch.SaveFile(ctx, pathname)
+			// use oldNode if the file hasn't changed
+			if oldNode != nil && !oldNode.IsNewer(pathname, fi) {
+				debug.Log("%v hasn't changed, returning old node", pathname)
+				node = oldNode
+				err = nil
+			} else {
+				node, err = arch.SaveFile(ctx, pathname)
+			}
 		case fi.Mode().IsDir():
 			oldSubtree := arch.loadSubtree(ctx, oldNode)
 			node, err = arch.SaveDir(ctx, path.Join(prefix, fi.Name()), fi, pathname, oldSubtree)
@@ -221,7 +228,7 @@ type SnapshotOptions struct {
 
 // Save saves a target (file or directory) to the repo.
 func (arch *NewArchiver) Save(ctx context.Context, prefix, target string, previous *restic.Node) (node *restic.Node, err error) {
-	debug.Log("%v target %q", prefix, target)
+	debug.Log("%v target %q, previous %v", prefix, target, previous)
 	fi, err := arch.FS.Lstat(target)
 	if err != nil {
 		return nil, err
@@ -239,6 +246,12 @@ func (arch *NewArchiver) Save(ctx context.Context, prefix, target string, previo
 
 	switch {
 	case fs.IsRegularFile(fi):
+		// use previous node if the file hasn't changed
+		if previous != nil && !previous.IsNewer(target, fi) {
+			debug.Log("%v hasn't changed, returning old node", target)
+			return previous, err
+		}
+
 		node, err = arch.SaveFile(ctx, target)
 	case fi.IsDir():
 		oldSubtree := arch.loadSubtree(ctx, previous)
@@ -283,7 +296,7 @@ func fileChanged(fi os.FileInfo, node *restic.Node) bool {
 
 // SaveArchiveTree stores an ArchiveTree in the repo, returned is the tree.
 func (arch *NewArchiver) SaveArchiveTree(ctx context.Context, prefix string, atree *ArchiveTree, previous *restic.Tree) (*restic.Tree, error) {
-	debug.Log("%v (%v nodes)", prefix, len(atree.Nodes))
+	debug.Log("%v (%v nodes), parent %v", prefix, len(atree.Nodes), previous)
 
 	tree := restic.NewTree()
 
@@ -402,10 +415,38 @@ func resolveRelativeTargets(fs fs.FS, targets []string) ([]string, error) {
 
 // Options collect attributes for a new snapshot.
 type Options struct {
-	Tags     []string
-	Hostname string
-	Excludes []string
-	Time     time.Time
+	Tags           []string
+	Hostname       string
+	Excludes       []string
+	Time           time.Time
+	ParentSnapshot restic.ID
+}
+
+// loadParentTree loads a tree referenced by snapshot id. If id is null, nil is returned.
+func (arch *NewArchiver) loadParentTree(ctx context.Context, snapshotID restic.ID) *restic.Tree {
+	if snapshotID.IsNull() {
+		return nil
+	}
+
+	debug.Log("load parent snapshot %v", snapshotID)
+	sn, err := restic.LoadSnapshot(ctx, arch.Repo, snapshotID)
+	if err != nil {
+		debug.Log("unable to load snapshot %v: %v", snapshotID, err)
+		return nil
+	}
+
+	if sn.Tree == nil {
+		debug.Log("snapshot %v has empty tree %v", snapshotID)
+		return nil
+	}
+
+	debug.Log("load parent tree %v", *sn.Tree)
+	tree, err := arch.Repo.LoadTree(ctx, *sn.Tree)
+	if err != nil {
+		debug.Log("unable to load tree %v: %v", *sn.Tree, err)
+		return nil
+	}
+	return tree
 }
 
 // Snapshot saves several targets and returns a snapshot.
@@ -434,12 +475,12 @@ func (arch *NewArchiver) Snapshot(ctx context.Context, targets []string, opts Op
 		return nil, restic.ID{}, err
 	}
 
-	tree, err := arch.SaveArchiveTree(ctx, "/", atree, nil)
+	tree, err := arch.SaveArchiveTree(ctx, "/", atree, arch.loadParentTree(ctx, opts.ParentSnapshot))
 	if err != nil {
 		return nil, restic.ID{}, err
 	}
 
-	id, err := arch.Repo.SaveTree(ctx, tree)
+	rootTreeID, err := arch.Repo.SaveTree(ctx, tree)
 	if err != nil {
 		return nil, restic.ID{}, err
 	}
@@ -456,9 +497,9 @@ func (arch *NewArchiver) Snapshot(ctx context.Context, targets []string, opts Op
 
 	sn, err := restic.NewSnapshot(targets, opts.Tags, opts.Hostname, opts.Time)
 	sn.Excludes = opts.Excludes
-	sn.Tree = &id
+	sn.Tree = &rootTreeID
 
-	id, err = arch.Repo.SaveJSONUnpacked(ctx, restic.SnapshotFile, sn)
+	id, err := arch.Repo.SaveJSONUnpacked(ctx, restic.SnapshotFile, sn)
 	if err != nil {
 		return nil, restic.ID{}, err
 	}

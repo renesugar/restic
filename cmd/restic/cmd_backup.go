@@ -472,6 +472,7 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, args []string) error {
 	arch := &archiver.NewArchiver{
 		Repo:   repo,
 		Select: selectFilter,
+		FS:     &fs.Local{},
 	}
 
 	// _, id, err := arch.Snapshot(gopts.ctx, newArchiveProgress(gopts, stat), target, opts.Tags, opts.Hostname, parentSnapshotID, timeStamp)
@@ -484,11 +485,16 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, args []string) error {
 	// 	return err
 	// }
 
+	if parentSnapshotID == nil {
+		parentSnapshotID = &restic.ID{}
+	}
+
 	snapshotOpts := archiver.Options{
-		Excludes: opts.Excludes,
-		Tags:     opts.Tags,
-		Time:     timeStamp,
-		Hostname: opts.Hostname,
+		Excludes:       opts.Excludes,
+		Tags:           opts.Tags,
+		Time:           timeStamp,
+		Hostname:       opts.Hostname,
+		ParentSnapshot: *parentSnapshotID,
 	}
 
 	_, id, err := arch.Snapshot(gopts.ctx, target, snapshotOpts)

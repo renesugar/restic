@@ -922,7 +922,11 @@ func TestNewArchiverParent(t *testing.T) {
 				return nil
 			})
 
-			_, secondSnapshotID, err := arch.Snapshot(ctx, []string{"."}, Options{Time: time.Now()})
+			opts := Options{
+				Time:           time.Now(),
+				ParentSnapshot: firstSnapshotID,
+			}
+			_, secondSnapshotID, err := arch.Snapshot(ctx, []string{"."}, opts)
 			if err != nil {
 				t.Fatal(err)
 			}
