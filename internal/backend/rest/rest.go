@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 
 	"golang.org/x/net/context/ctxhttp"
@@ -105,13 +106,18 @@ func (b *restBackend) Location() string {
 }
 
 // Save stores data in the backend at the handle.
-func (b *restBackend) Save(ctx context.Context, h restic.Handle, rd io.Reader) (err error) {
+func (b *restBackend) Save(ctx context.Context, h restic.Handle, length int, fn func() (io.Reader, error)) error {
 	if err := h.Valid(); err != nil {
 		return err
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	rd, err := fn()
+	if err != nil {
+		return err
+	}
 
 	// make sure that client.Post() cannot close the reader by wrapping it
 	rd = ioutil.NopCloser(rd)
@@ -120,6 +126,7 @@ func (b *restBackend) Save(ctx context.Context, h restic.Handle, rd io.Reader) (
 	if err != nil {
 		return errors.Wrap(err, "NewRequest")
 	}
+	req.Header.Set("Content-Length", strconv.Itoa(length))
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Accept", contentTypeV2)
 

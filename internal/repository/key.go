@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"time"
@@ -250,7 +251,9 @@ func AddKey(ctx context.Context, s *Repository, password string, template *crypt
 		Name: restic.Hash(buf).String(),
 	}
 
-	err = s.be.Save(ctx, h, bytes.NewReader(buf))
+	err = s.be.Save(ctx, h, len(buf), func() (io.Reader, error) {
+		return bytes.NewReader(buf), nil
+	})
 	if err != nil {
 		return nil, err
 	}

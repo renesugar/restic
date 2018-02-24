@@ -48,7 +48,7 @@ func forgetfulBackend() restic.Backend {
 		return nil, errors.New("not found")
 	}
 
-	be.SaveFn = func(ctx context.Context, h restic.Handle, rd io.Reader) error {
+	be.SaveFn = func(ctx context.Context, h restic.Handle, length int, fn func() (io.Reader, error)) error {
 		return nil
 	}
 

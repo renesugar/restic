@@ -3,6 +3,7 @@ package cache
 import (
 	"bytes"
 	"context"
+	"io"
 	"math/rand"
 	"testing"
 
@@ -28,7 +29,9 @@ func loadAndCompare(t testing.TB, be restic.Backend, h restic.Handle, data []byt
 }
 
 func save(t testing.TB, be restic.Backend, h restic.Handle, data []byte) {
-	err := be.Save(context.TODO(), h, bytes.NewReader(data))
+	err := be.Save(context.TODO(), h, len(data), func() (io.Reader, error) {
+		return bytes.NewReader(data), nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

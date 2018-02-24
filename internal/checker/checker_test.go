@@ -195,14 +195,22 @@ func TestModifiedIndex(t *testing.T) {
 		Type: restic.IndexFile,
 		Name: "90f838b4ac28735fda8644fe6a08dbc742e57aaf81b30977b4fefa357010eafd",
 	}
-	err := repo.Backend().Load(context.TODO(), h, 0, 0, func(rd io.Reader) error {
+
+	fi, err := repo.Backend().Stat(context.TODO(), h)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = repo.Backend().Load(context.TODO(), h, 0, 0, func(rd io.Reader) error {
 		// save the index again with a modified name so that the hash doesn't match
 		// the content any more
 		h2 := restic.Handle{
 			Type: restic.IndexFile,
 			Name: "80f838b4ac28735fda8644fe6a08dbc742e57aaf81b30977b4fefa357010eafd",
 		}
-		return repo.Backend().Save(context.TODO(), h2, rd)
+		return repo.Backend().Save(context.TODO(), h2, int(fi.Size), func() (io.Reader, error) {
+			return rd, nil
+		})
 	})
 	test.OK(t, err)
 

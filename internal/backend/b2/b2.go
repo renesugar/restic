@@ -185,11 +185,16 @@ func (be *b2Backend) openReader(ctx context.Context, h restic.Handle, length int
 }
 
 // Save stores data in the backend at the handle.
-func (be *b2Backend) Save(ctx context.Context, h restic.Handle, rd io.Reader) error {
+func (be *b2Backend) Save(ctx context.Context, h restic.Handle, length int, fn func() (io.Reader, error)) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	if err := h.Valid(); err != nil {
+		return err
+	}
+
+	rd, err := fn()
+	if err != nil {
 		return err
 	}
 

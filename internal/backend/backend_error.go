@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"sync"
 
+	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/errors"
 	"github.com/restic/restic/internal/restic"
 )
@@ -45,9 +46,15 @@ func (be *ErrorBackend) fail(p float32) bool {
 }
 
 // Save stores the data in the backend under the given handle.
-func (be *ErrorBackend) Save(ctx context.Context, h restic.Handle, rd io.Reader) error {
+func (be *ErrorBackend) Save(ctx context.Context, h restic.Handle, length int, fn func() (io.Reader, error)) error {
 	if be.fail(be.FailSave) {
 		return errors.Errorf("Save(%v) random error induced", h)
+	}
+
+	rd, err := fn()
+	if err != nil {
+		debug.Log("call to fn failed")
+		return err
 	}
 
 	if be.fail(be.FailSaveRead) {
@@ -59,7 +66,7 @@ func (be *ErrorBackend) Save(ctx context.Context, h restic.Handle, rd io.Reader)
 		return errors.Errorf("Save(%v) random error with partial read induced", h)
 	}
 
-	return be.Backend.Save(ctx, h, rd)
+	return be.Backend.Save(ctx, h, length, fn)
 }
 
 // Load returns a reader that yields the contents of the file at h at the

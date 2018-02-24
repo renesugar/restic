@@ -85,7 +85,9 @@ func (s *Suite) TestConfig(t *testing.T) {
 		t.Fatalf("did not get expected error for non-existing config")
 	}
 
-	err = b.Save(context.TODO(), restic.Handle{Type: restic.ConfigFile}, strings.NewReader(testString))
+	err = b.Save(context.TODO(), restic.Handle{Type: restic.ConfigFile}, len(testString), func() (io.Reader, error) {
+		return strings.NewReader(testString), nil
+	})
 	if err != nil {
 		t.Fatalf("Save() error: %+v", err)
 	}
@@ -135,7 +137,9 @@ func (s *Suite) TestLoad(t *testing.T) {
 	id := restic.Hash(data)
 
 	handle := restic.Handle{Type: restic.DataFile, Name: id.String()}
-	err = b.Save(context.TODO(), handle, bytes.NewReader(data))
+	err = b.Save(context.TODO(), handle, len(data), func() (io.Reader, error) {
+		return bytes.NewReader(data), nil
+	})
 	if err != nil {
 		t.Fatalf("Save() error: %+v", err)
 	}
@@ -250,7 +254,9 @@ func (s *Suite) TestList(t *testing.T) {
 		data := test.Random(rand.Int(), rand.Intn(100)+55)
 		id := restic.Hash(data)
 		h := restic.Handle{Type: restic.DataFile, Name: id.String()}
-		err := b.Save(context.TODO(), h, bytes.NewReader(data))
+		err := b.Save(context.TODO(), h, len(data), func() (io.Reader, error) {
+			return bytes.NewReader(data), nil
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -340,7 +346,9 @@ func (s *Suite) TestListCancel(t *testing.T) {
 		data := []byte(fmt.Sprintf("random test blob %v", i))
 		id := restic.Hash(data)
 		h := restic.Handle{Type: restic.DataFile, Name: id.String()}
-		err := b.Save(context.TODO(), h, bytes.NewReader(data))
+		err := b.Save(context.TODO(), h, len(data), func() (io.Reader, error) {
+			return bytes.NewReader(data), nil
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -480,7 +488,9 @@ func (s *Suite) TestSave(t *testing.T) {
 			Type: restic.DataFile,
 			Name: fmt.Sprintf("%s-%d", id, i),
 		}
-		err := b.Save(context.TODO(), h, bytes.NewReader(data))
+		err := b.Save(context.TODO(), h, len(data), func() (io.Reader, error) {
+			return bytes.NewReader(data), nil
+		})
 		test.OK(t, err)
 
 		buf, err := backend.LoadAll(context.TODO(), b, h)
@@ -532,7 +542,9 @@ func (s *Suite) TestSave(t *testing.T) {
 
 	// wrap the tempfile in an errorCloser, so we can detect if the backend
 	// closes the reader
-	err = b.Save(context.TODO(), h, errorCloser{t: t, l: length, Reader: tmpfile})
+	err = b.Save(context.TODO(), h, length, func() (io.Reader, error) {
+		return errorCloser{t: t, l: length, Reader: tmpfile}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,11 +555,14 @@ func (s *Suite) TestSave(t *testing.T) {
 	}
 
 	// try again directly with the temp file
-	if _, err = tmpfile.Seek(588, io.SeekStart); err != nil {
-		t.Fatal(err)
-	}
+	const off = 588
+	err = b.Save(context.TODO(), h, length-off, func() (io.Reader, error) {
+		if _, err = tmpfile.Seek(off, io.SeekStart); err != nil {
+			t.Fatal(err)
+		}
 
-	err = b.Save(context.TODO(), h, tmpfile)
+		return tmpfile, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +600,9 @@ func (s *Suite) TestSaveFilenames(t *testing.T) {
 
 	for i, test := range filenameTests {
 		h := restic.Handle{Name: test.name, Type: restic.DataFile}
-		err := b.Save(context.TODO(), h, strings.NewReader(test.data))
+		err := b.Save(context.TODO(), h, len(test.data), func() (io.Reader, error) {
+			return strings.NewReader(test.data), nil
+		})
 		if err != nil {
 			t.Errorf("test %d failed: Save() returned %+v", i, err)
 			continue
@@ -622,7 +639,9 @@ var testStrings = []struct {
 func store(t testing.TB, b restic.Backend, tpe restic.FileType, data []byte) restic.Handle {
 	id := restic.Hash(data)
 	h := restic.Handle{Name: id.String(), Type: tpe}
-	err := b.Save(context.TODO(), h, bytes.NewReader(data))
+	err := b.Save(context.TODO(), h, len(data), func() (io.Reader, error) {
+		return bytes.NewReader(data), nil
+	})
 	test.OK(t, err)
 	return h
 }
@@ -776,7 +795,9 @@ func (s *Suite) TestBackend(t *testing.T) {
 		test.Assert(t, !ok, "removed blob still present")
 
 		// create blob
-		err = b.Save(context.TODO(), h, strings.NewReader(ts.data))
+		err = b.Save(context.TODO(), h, len(ts.data), func() (io.Reader, error) {
+			return strings.NewReader(ts.data), nil
+		})
 		test.OK(t, err)
 
 		// list items

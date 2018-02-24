@@ -20,8 +20,11 @@ type Backend interface {
 	// Close the backend
 	Close() error
 
-	// Save stores the data in the backend under the given handle.
-	Save(ctx context.Context, h Handle, rd io.Reader) error
+	// Save stores the data returned by the reader returned from fn in the
+	// backend under the given handle. The function fn may be called several
+	// times to retry the operation in case an error occurs. When fn returns an
+	// error, the process is aborted and the error is returned to the caller.
+	Save(ctx context.Context, h Handle, length int, fn func() (io.Reader, error)) error
 
 	// Load runs fn with a reader that yields the contents of the file at h at the
 	// given offset. If length is larger than zero, only a portion of the file

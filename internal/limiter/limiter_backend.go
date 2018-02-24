@@ -21,8 +21,17 @@ type rateLimitedBackend struct {
 	limiter Limiter
 }
 
-func (r rateLimitedBackend) Save(ctx context.Context, h restic.Handle, rd io.Reader) error {
-	return r.Backend.Save(ctx, h, r.limiter.Upstream(rd))
+func (r rateLimitedBackend) Save(ctx context.Context, h restic.Handle, length int, fn func() (io.Reader, error)) error {
+	rateLimitedFn := func() (io.Reader, error) {
+		rd, err := fn()
+		if err != nil {
+			return nil, err
+		}
+
+		return r.limiter.Upstream(rd), nil
+	}
+
+	return r.Backend.Save(ctx, h, length, rateLimitedFn)
 }
 
 func (r rateLimitedBackend) Load(ctx context.Context, h restic.Handle, length int, offset int64, consumer func(rd io.Reader) error) error {

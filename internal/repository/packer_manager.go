@@ -19,7 +19,7 @@ import (
 
 // Saver implements saving data in a backend.
 type Saver interface {
-	Save(context.Context, restic.Handle, io.Reader) error
+	Save(context.Context, restic.Handle, int, func() (io.Reader, error)) error
 }
 
 // Packer holds a pack.Packer together with a hash writer.
@@ -96,15 +96,19 @@ func (r *Repository) savePacker(ctx context.Context, t restic.BlobType, p *Packe
 		return err
 	}
 
-	_, err = p.tmpfile.Seek(0, 0)
-	if err != nil {
-		return errors.Wrap(err, "Seek")
-	}
-
 	id := restic.IDFromHash(p.hw.Sum(nil))
 	h := restic.Handle{Type: restic.DataFile, Name: id.String()}
 
-	err = r.be.Save(ctx, h, p.tmpfile)
+	err = r.be.Save(ctx, h, int(p.Packer.Size()), func() (io.Reader, error) {
+		// rewind the reader
+		_, err = p.tmpfile.Seek(0, 0)
+		if err != nil {
+			return nil, errors.Wrap(err, "Seek")
+		}
+
+		// then pass it to the backend
+		return p.tmpfile, nil
+	})
 	if err != nil {
 		debug.Log("Save(%v) error: %v", h, err)
 		return err
