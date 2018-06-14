@@ -29,14 +29,31 @@ directories in an encrypted repository stored on different backends.
 	SilenceUsage:      true,
 	DisableAutoGenTag: true,
 
-	PersistentPreRunE: func(*cobra.Command, []string) error {
+	PersistentPreRunE: func(c *cobra.Command, args []string) error {
+		// set verbosity, default is one
+		globalOptions.verbosity = 1
+		if globalOptions.Quiet && (globalOptions.Verbose > 1) {
+			return errors.Fatal("--quiet and --verbose cannot be specified at the same time")
+		}
+
+		switch {
+		case globalOptions.Verbose >= 2:
+			globalOptions.verbosity = 3
+		case globalOptions.Verbose > 0:
+			globalOptions.verbosity = 2
+		case globalOptions.Quiet:
+			globalOptions.verbosity = 0
+		}
+
 		// parse extended options
 		opts, err := options.Parse(globalOptions.Options)
 		if err != nil {
 			return err
 		}
 		globalOptions.extended = opts
-
+		if c.Name() == "version" {
+			return nil
+		}
 		pwd, err := resolvePassword(globalOptions, "RESTIC_PASSWORD")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Resolving password failed: %v\n", err)
@@ -64,7 +81,7 @@ func init() {
 
 func main() {
 	debug.Log("main %#v", os.Args)
-	debug.Log("restic %s, compiled with %v on %v/%v",
+	debug.Log("restic %s compiled with %v on %v/%v",
 		version, runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	err := cmdRoot.Execute()
 

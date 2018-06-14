@@ -98,7 +98,7 @@ func (b *Local) IsNotExist(err error) bool {
 }
 
 // Save stores data in the backend at the handle.
-func (b *Local) Save(ctx context.Context, h restic.Handle, rd io.Reader) error {
+func (b *Local) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
 	debug.Log("Save %v", h)
 	if err := h.Valid(); err != nil {
 		return err
@@ -235,7 +235,7 @@ func (b *Local) List(ctx context.Context, t restic.FileType, fn func(restic.File
 	debug.Log("List %v", t)
 
 	basedir, subdirs := b.Basedir(t)
-	return fs.Walk(basedir, func(path string, fi os.FileInfo, err error) error {
+	err := fs.Walk(basedir, func(path string, fi os.FileInfo, err error) error {
 		debug.Log("walk on %v\n", path)
 		if err != nil {
 			return err
@@ -271,6 +271,13 @@ func (b *Local) List(ctx context.Context, t restic.FileType, fn func(restic.File
 
 		return ctx.Err()
 	})
+
+	if b.IsNotExist(err) {
+		debug.Log("ignoring non-existing directory")
+		return nil
+	}
+
+	return err
 }
 
 // Delete removes the repository and all files.

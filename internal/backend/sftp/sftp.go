@@ -65,7 +65,7 @@ func startClient(program string, args ...string) (*SFTP, error) {
 		return nil, errors.Wrap(err, "cmd.StdoutPipe")
 	}
 
-	bg, err := startForeground(cmd)
+	bg, err := backend.StartForeground(cmd)
 	if err != nil {
 		return nil, errors.Wrap(err, "cmd.Start")
 	}
@@ -75,7 +75,9 @@ func startClient(program string, args ...string) (*SFTP, error) {
 	go func() {
 		err := cmd.Wait()
 		debug.Log("ssh command exited, err %v", err)
-		ch <- errors.Wrap(err, "cmd.Wait")
+		for {
+			ch <- errors.Wrap(err, "ssh command exited")
+		}
 	}()
 
 	// open the SFTP session
@@ -179,7 +181,12 @@ func (r *SFTP) IsNotExist(err error) bool {
 
 func buildSSHCommand(cfg Config) (cmd string, args []string, err error) {
 	if cfg.Command != "" {
-		return SplitShellArgs(cfg.Command)
+		args, err := backend.SplitShellStrings(cfg.Command)
+		if err != nil {
+			return "", nil, err
+		}
+
+		return args[0], args[1:], nil
 	}
 
 	cmd = "ssh"
@@ -282,7 +289,7 @@ func Join(parts ...string) string {
 }
 
 // Save stores data in the backend at the handle.
-func (r *SFTP) Save(ctx context.Context, h restic.Handle, rd io.Reader) (err error) {
+func (r *SFTP) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
 	debug.Log("Save %v", h)
 	if err := r.clientError(); err != nil {
 		return err
@@ -420,6 +427,10 @@ func (r *SFTP) List(ctx context.Context, t restic.FileType, fn func(restic.FileI
 	walker := r.c.Walk(basedir)
 	for walker.Step() {
 		if walker.Err() != nil {
+			if r.IsNotExist(walker.Err()) {
+				debug.Log("ignoring non-existing directory")
+				return nil
+			}
 			return walker.Err()
 		}
 

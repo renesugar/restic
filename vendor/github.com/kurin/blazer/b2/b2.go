@@ -45,7 +45,7 @@ type Client struct {
 	slock    sync.Mutex
 	sWriters map[string]*Writer
 	sReaders map[string]*Reader
-	sMethods map[string]int
+	sMethods []methodCounter
 }
 
 // NewClient creates and returns a new Client with valid B2 service account
@@ -55,7 +55,12 @@ func NewClient(ctx context.Context, account, key string, opts ...ClientOption) (
 		backend: &beRoot{
 			b2i: &b2Root{},
 		},
-		sMethods: make(map[string]int),
+		sMethods: []methodCounter{
+			newMethodCounter(time.Minute, time.Second),
+			newMethodCounter(time.Minute*5, time.Second),
+			newMethodCounter(time.Hour, time.Minute),
+			newMethodCounter(0, 0), // forever
+		},
 	}
 	opts = append(opts, client(c))
 	if err := c.backend.authorizeAccount(ctx, account, key, opts...); err != nil {
@@ -71,6 +76,26 @@ type clientOptions struct {
 	expireTokens    bool
 	capExceeded     bool
 	userAgents      []string
+}
+
+// for testing
+func (c clientOptions) eq(o clientOptions) bool {
+	if c.client != o.client ||
+		c.transport != o.transport ||
+		c.failSomeUploads != o.failSomeUploads ||
+		c.expireTokens != o.expireTokens ||
+		c.capExceeded != o.capExceeded {
+		return false
+	}
+	if len(c.userAgents) != len(o.userAgents) {
+		return false
+	}
+	for i := range c.userAgents {
+		if c.userAgents[i] != o.userAgents[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // A ClientOption allows callers to adjust various per-client settings.
@@ -131,17 +156,30 @@ type clientTransport struct {
 }
 
 func (ct *clientTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	method := r.Header.Get("X-Blazer-Method")
-	if method != "" && ct.client != nil {
-		ct.client.slock.Lock()
-		ct.client.sMethods[method]++
-		ct.client.slock.Unlock()
-	}
+	m := r.Header.Get("X-Blazer-Method")
 	t := ct.rt
 	if t == nil {
 		t = http.DefaultTransport
 	}
-	return t.RoundTrip(r)
+	b := time.Now()
+	resp, err := t.RoundTrip(r)
+	e := time.Now()
+	if err != nil {
+		return resp, err
+	}
+	if m != "" && ct.client != nil {
+		ct.client.slock.Lock()
+		m := method{
+			name:     m,
+			duration: e.Sub(b),
+			status:   resp.StatusCode,
+		}
+		for _, counter := range ct.client.sMethods {
+			counter.record(m)
+		}
+		ct.client.slock.Unlock()
+	}
+	return resp, nil
 }
 
 // Bucket is a reference to a B2 bucket.
@@ -463,7 +501,7 @@ const (
 	Hider
 
 	// Folder is a special state given to non-objects that are returned during a
-	// List*Objects call with a non-empty Delimiter.
+	// List call with a ListDelimiter option.
 	Folder
 )
 
@@ -536,6 +574,8 @@ func (o *Object) Delete(ctx context.Context) error {
 }
 
 // Cursor is passed to ListObjects to return subsequent pages.
+//
+// DEPRECATED.  Will be removed in a future release.
 type Cursor struct {
 	// Prefix limits the listed objects to those that begin with this string.
 	Prefix string
@@ -564,6 +604,8 @@ type Cursor struct {
 //
 // ListObjects will return io.EOF when there are no objects left in the bucket,
 // however it may do so concurrently with the last objects.
+//
+// DEPRECATED.  Will be removed in a future release.
 func (b *Bucket) ListObjects(ctx context.Context, count int, c *Cursor) ([]*Object, *Cursor, error) {
 	if c == nil {
 		c = &Cursor{}
@@ -598,6 +640,8 @@ func (b *Bucket) ListObjects(ctx context.Context, count int, c *Cursor) ([]*Obje
 
 // ListCurrentObjects is similar to ListObjects, except that it returns only
 // current, unhidden objects in the bucket.
+//
+// DEPRECATED.  Will be removed in a future release.
 func (b *Bucket) ListCurrentObjects(ctx context.Context, count int, c *Cursor) ([]*Object, *Cursor, error) {
 	if c == nil {
 		c = &Cursor{}
@@ -631,6 +675,8 @@ func (b *Bucket) ListCurrentObjects(ctx context.Context, count int, c *Cursor) (
 
 // ListUnfinishedLargeFiles lists any objects that correspond to large file uploads that haven't been completed.
 // This can happen for example when an upload is interrupted.
+//
+// DEPRECATED.  Will be removed in a future release.
 func (b *Bucket) ListUnfinishedLargeFiles(ctx context.Context, count int, c *Cursor) ([]*Object, *Cursor, error) {
 	if c == nil {
 		c = &Cursor{}

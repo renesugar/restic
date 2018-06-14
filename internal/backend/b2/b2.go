@@ -185,7 +185,7 @@ func (be *b2Backend) openReader(ctx context.Context, h restic.Handle, length int
 }
 
 // Save stores data in the backend at the handle.
-func (be *b2Backend) Save(ctx context.Context, h restic.Handle, rd io.Reader) error {
+func (be *b2Backend) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -289,10 +289,6 @@ func (be *b2Backend) List(ctx context.Context, t restic.FileType, fn func(restic
 			m := path.Base(obj.Name())
 			if m == "" {
 				continue
-			}
-
-			if ctx.Err() != nil {
-				return ctx.Err()
 			}
 
 			if ctx.Err() != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/restic/restic/internal/checker"
 	"github.com/restic/restic/internal/errors"
+	"github.com/restic/restic/internal/fs"
 	"github.com/restic/restic/internal/restic"
 )
 
@@ -117,15 +119,55 @@ func newReadProgress(gopts GlobalOptions, todo restic.Stat) *restic.Progress {
 	return readProgress
 }
 
+// prepareCheckCache configures a special cache directory for check.
+//
+//  * if --with-cache is specified, the default cache is used
+//  * if the user explicitly requested --no-cache, we don't use any cache
+//  * by default, we use a cache in a temporary directory that is deleted after the check
+func prepareCheckCache(opts CheckOptions, gopts *GlobalOptions) (cleanup func()) {
+	cleanup = func() {}
+	if opts.WithCache {
+		// use the default cache, no setup needed
+		return cleanup
+	}
+
+	if gopts.NoCache {
+		// don't use any cache, no setup needed
+		return cleanup
+	}
+
+	// use a cache in a temporary directory
+	tempdir, err := ioutil.TempDir("", "restic-check-cache-")
+	if err != nil {
+		// if an error occurs, don't use any cache
+		Warnf("unable to create temporary directory for cache during check, disabling cache: %v\n", err)
+		gopts.NoCache = true
+		return cleanup
+	}
+
+	gopts.CacheDir = tempdir
+	Verbosef("using temporary cache in %v\n", tempdir)
+
+	cleanup = func() {
+		err := fs.RemoveAll(tempdir)
+		if err != nil {
+			Warnf("error removing temporary cache directory: %v\n", err)
+		}
+	}
+
+	return cleanup
+}
+
 func runCheck(opts CheckOptions, gopts GlobalOptions, args []string) error {
 	if len(args) != 0 {
 		return errors.Fatal("check has no arguments")
 	}
 
-	if !opts.WithCache {
-		// do not use a cache for the checker
-		gopts.NoCache = true
-	}
+	cleanup := prepareCheckCache(opts, &gopts)
+	AddCleanupHandler(func() error {
+		cleanup()
+		return nil
+	})
 
 	repo, err := OpenRepository(gopts)
 	if err != nil {
@@ -155,7 +197,7 @@ func runCheck(opts CheckOptions, gopts GlobalOptions, args []string) error {
 	}
 
 	if dupFound {
-		Printf("\nrun `restic rebuild-index' to correct this\n")
+		Printf("This is non-critical, you can run `restic rebuild-index' to correct this\n")
 	}
 
 	if len(errs) > 0 {
@@ -166,14 +208,24 @@ func runCheck(opts CheckOptions, gopts GlobalOptions, args []string) error {
 	}
 
 	errorsFound := false
+	orphanedPacks := 0
 	errChan := make(chan error)
 
 	Verbosef("check all packs\n")
 	go chkr.Packs(gopts.ctx, errChan)
 
 	for err := range errChan {
+		if checker.IsOrphanedPack(err) {
+			orphanedPacks++
+			Verbosef("%v\n", err)
+			continue
+		}
 		errorsFound = true
 		fmt.Fprintf(os.Stderr, "%v\n", err)
+	}
+
+	if orphanedPacks > 0 {
+		Verbosef("%d additional files were found in the repo, which likely contain duplicate data.\nYou can run `restic prune` to correct this.\n", orphanedPacks)
 	}
 
 	Verbosef("check snapshots, trees and blobs\n")

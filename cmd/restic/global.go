@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,6 +17,7 @@ import (
 	"github.com/restic/restic/internal/backend/gs"
 	"github.com/restic/restic/internal/backend/local"
 	"github.com/restic/restic/internal/backend/location"
+	"github.com/restic/restic/internal/backend/rclone"
 	"github.com/restic/restic/internal/backend/rest"
 	"github.com/restic/restic/internal/backend/s3"
 	"github.com/restic/restic/internal/backend/sftp"
@@ -29,6 +29,7 @@ import (
 	"github.com/restic/restic/internal/options"
 	"github.com/restic/restic/internal/repository"
 	"github.com/restic/restic/internal/restic"
+	"github.com/restic/restic/internal/textfile"
 
 	"github.com/restic/restic/internal/errors"
 
@@ -42,6 +43,7 @@ type GlobalOptions struct {
 	Repo          string
 	PasswordFile  string
 	Quiet         bool
+	Verbose       int
 	NoLock        bool
 	JSON          bool
 	CacheDir      string
@@ -57,6 +59,13 @@ type GlobalOptions struct {
 	password string
 	stdout   io.Writer
 	stderr   io.Writer
+
+	// verbosity is set as follows:
+	//  0 means: don't print any messages except errors, this is used when --quiet is specified
+	//  1 is the default: print essential messages
+	//  2 means: print more messages, report minor things, this is used when --verbose is specified
+	//  3 means: print very detailed debug messages, this is used when --debug is specified
+	verbosity uint
 
 	Options []string
 
@@ -80,11 +89,12 @@ func init() {
 	f.StringVarP(&globalOptions.Repo, "repo", "r", os.Getenv("RESTIC_REPOSITORY"), "repository to backup to or restore from (default: $RESTIC_REPOSITORY)")
 	f.StringVarP(&globalOptions.PasswordFile, "password-file", "p", os.Getenv("RESTIC_PASSWORD_FILE"), "read the repository password from a file (default: $RESTIC_PASSWORD_FILE)")
 	f.BoolVarP(&globalOptions.Quiet, "quiet", "q", false, "do not output comprehensive progress report")
+	f.CountVarP(&globalOptions.Verbose, "verbose", "v", "be verbose (specify --verbose multiple times or level `n`)")
 	f.BoolVar(&globalOptions.NoLock, "no-lock", false, "do not lock the repo, this allows some operations on read-only repos")
 	f.BoolVarP(&globalOptions.JSON, "json", "", false, "set output mode to JSON for commands that support it")
 	f.StringVar(&globalOptions.CacheDir, "cache-dir", "", "set the cache directory")
 	f.BoolVar(&globalOptions.NoCache, "no-cache", false, "do not use a local cache")
-	f.StringSliceVar(&globalOptions.CACerts, "cacert", nil, "path to load root certificates from (default: use system certificates)")
+	f.StringSliceVar(&globalOptions.CACerts, "cacert", nil, "`file` to load root certificates from (default: use system certificates)")
 	f.StringVar(&globalOptions.TLSClientCert, "tls-client-cert", "", "path to a file containing PEM encoded TLS client certificate and private key")
 	f.BoolVar(&globalOptions.CleanupCache, "cleanup-cache", false, "auto remove old cache directories")
 	f.IntVar(&globalOptions.LimitUploadKb, "limit-upload", 0, "limits uploads to a maximum rate in KiB/s. (default: unlimited)")
@@ -172,11 +182,9 @@ func Printf(format string, args ...interface{}) {
 
 // Verbosef calls Printf to write the message when the verbose flag is set.
 func Verbosef(format string, args ...interface{}) {
-	if globalOptions.Quiet {
-		return
+	if globalOptions.verbosity >= 1 {
+		Printf(format, args...)
 	}
-
-	Printf(format, args...)
 }
 
 // PrintProgress wraps fmt.Printf to handle the difference in writing progress
@@ -227,8 +235,8 @@ func Exitf(exitcode int, format string, args ...interface{}) {
 // resolvePassword determines the password to be used for opening the repository.
 func resolvePassword(opts GlobalOptions, env string) (string, error) {
 	if opts.PasswordFile != "" {
-		s, err := ioutil.ReadFile(opts.PasswordFile)
-		if os.IsNotExist(err) {
+		s, err := textfile.Read(opts.PasswordFile)
+		if os.IsNotExist(errors.Cause(err)) {
 			return "", errors.Fatalf("%s does not exist", opts.PasswordFile)
 		}
 		return strings.TrimSpace(string(s)), errors.Wrap(err, "Readfile")
@@ -347,7 +355,11 @@ func OpenRepository(opts GlobalOptions) (*repository.Repository, error) {
 	}
 
 	if stdoutIsTerminal() {
-		Verbosef("password is correct\n")
+		id := s.Config().ID
+		if len(id) > 8 {
+			id = id[:8]
+		}
+		Verbosef("repository %v opened successfully, password is correct\n", id)
 	}
 
 	if opts.NoCache {
@@ -378,7 +390,7 @@ func OpenRepository(opts GlobalOptions) (*repository.Repository, error) {
 		Printf("removing %d old cache dirs from %v\n", len(oldCacheDirs), c.Base)
 
 		for _, item := range oldCacheDirs {
-			dir := filepath.Join(c.Base, item)
+			dir := filepath.Join(c.Base, item.Name())
 			err = fs.RemoveAll(dir)
 			if err != nil {
 				Warnf("unable to remove %v: %v\n", dir, err)
@@ -438,18 +450,6 @@ func parseConfig(loc location.Location, opts options.Options) (interface{}, erro
 		cfg := loc.Config.(gs.Config)
 		if cfg.ProjectID == "" {
 			cfg.ProjectID = os.Getenv("GOOGLE_PROJECT_ID")
-		}
-
-		if cfg.JSONKeyPath == "" {
-			if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
-				// Check read access
-				if _, err := ioutil.ReadFile(path); err != nil {
-					return nil, errors.Fatalf("Failed to read google credential from file %v: %v", path, err)
-				}
-				cfg.JSONKeyPath = path
-			} else {
-				return nil, errors.Fatal("No credential file path is set")
-			}
 		}
 
 		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
@@ -523,6 +523,14 @@ func parseConfig(loc location.Location, opts options.Options) (interface{}, erro
 
 		debug.Log("opening rest repository at %#v", cfg)
 		return cfg, nil
+	case "rclone":
+		cfg := loc.Config.(rclone.Config)
+		if err := opts.Apply(loc.Scheme, &cfg); err != nil {
+			return nil, err
+		}
+
+		debug.Log("opening rest repository at %#v", cfg)
+		return cfg, nil
 	}
 
 	return nil, errors.Fatalf("invalid backend: %q", loc.Scheme)
@@ -553,17 +561,18 @@ func open(s string, gopts GlobalOptions, opts options.Options) (restic.Backend, 
 	}
 
 	// wrap the transport so that the throughput via HTTP is limited
-	rt = limiter.NewStaticLimiter(gopts.LimitUploadKb, gopts.LimitDownloadKb).Transport(rt)
+	lim := limiter.NewStaticLimiter(gopts.LimitUploadKb, gopts.LimitDownloadKb)
+	rt = lim.Transport(rt)
 
 	switch loc.Scheme {
 	case "local":
 		be, err = local.Open(cfg.(local.Config))
 		// wrap the backend in a LimitBackend so that the throughput is limited
-		be = limiter.LimitBackend(be, limiter.NewStaticLimiter(gopts.LimitUploadKb, gopts.LimitDownloadKb))
+		be = limiter.LimitBackend(be, lim)
 	case "sftp":
 		be, err = sftp.Open(cfg.(sftp.Config))
 		// wrap the backend in a LimitBackend so that the throughput is limited
-		be = limiter.LimitBackend(be, limiter.NewStaticLimiter(gopts.LimitUploadKb, gopts.LimitDownloadKb))
+		be = limiter.LimitBackend(be, lim)
 	case "s3":
 		be, err = s3.Open(cfg.(s3.Config), rt)
 	case "gs":
@@ -576,6 +585,8 @@ func open(s string, gopts GlobalOptions, opts options.Options) (restic.Backend, 
 		be, err = b2.Open(globalOptions.ctx, cfg.(b2.Config), rt)
 	case "rest":
 		be, err = rest.Open(cfg.(rest.Config), rt)
+	case "rclone":
+		be, err = rclone.Open(cfg.(rclone.Config), lim)
 
 	default:
 		return nil, errors.Fatalf("invalid backend: %q", loc.Scheme)
@@ -637,6 +648,8 @@ func create(s string, opts options.Options) (restic.Backend, error) {
 		return b2.Create(globalOptions.ctx, cfg.(b2.Config), rt)
 	case "rest":
 		return rest.Create(cfg.(rest.Config), rt)
+	case "rclone":
+		return rclone.Open(cfg.(rclone.Config), nil)
 	}
 
 	debug.Log("invalid repository scheme: %v", s)

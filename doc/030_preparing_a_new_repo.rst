@@ -15,20 +15,24 @@ Preparing a new repository
 ##########################
 
 The place where your backups will be saved at is called a "repository".
-This chapter explains how to create ("init") such a repository.
+This chapter explains how to create ("init") such a repository. The repository
+can be stored locally, or on some remote server or service. We'll first cover
+using a local repository, the remaining sections of this chapter cover all the
+other options. You can skip to the next chapter once you've read the relevant
+section here.
 
 Local
 *****
 
-In order to create a repository at ``/tmp/backup``, run the following
+In order to create a repository at ``/srv/restic-repo``, run the following
 command and enter the same password twice:
 
 .. code-block:: console
 
-    $ restic init --repo /tmp/backup
+    $ restic init --repo /srv/restic-repo
     enter password for new backend:
     enter password again:
-    created restic backend 085b3c76b9 at /tmp/backup
+    created restic backend 085b3c76b9 at /srv/restic-repo
     Please note that knowledge of your password is required to access the repository.
     Losing your password means that your data is irrecoverably lost.
 
@@ -55,10 +59,10 @@ simply be achieved by changing the URL scheme in the ``init`` command:
 
 .. code-block:: console
 
-    $ restic -r sftp:user@host:/tmp/backup init
+    $ restic -r sftp:user@host:/srv/restic-repo init
     enter password for new backend:
     enter password again:
-    created restic backend f1c6108821 at sftp:user@host:/tmp/backup
+    created restic backend f1c6108821 at sftp:user@host:/srv/restic-repo
     Please note that knowledge of your password is required to access the repository.
     Losing your password means that your data is irrecoverably lost.
 
@@ -87,7 +91,7 @@ specify the user name in this case):
 
 ::
 
-    $ restic -r sftp:foo:/tmp/backup init
+    $ restic -r sftp:foo:/srv/restic-repo init
 
 You can also add an entry with a special host name which does not exist,
 just for use with restic, and use the ``Hostname`` option to set the
@@ -104,7 +108,7 @@ Then use it in the backend specification:
 
 ::
 
-    $ restic -r sftp:restic-backup-host:/tmp/backup init
+    $ restic -r sftp:restic-backup-host:/srv/restic-repo init
 
 Last, if you'd like to use an entirely different program to create the
 SFTP connection, you can specify the command to be run with the option
@@ -139,7 +143,10 @@ If you use TLS, restic will use the system's CA certificates to verify the
 server certificate. When the verification fails, restic refuses to proceed and
 exits with an error. If you have your own self-signed certificate, or a custom
 CA certificate should be used for verification, you can pass restic the
-certificate filename via the `--cacert` option.
+certificate filename via the ``--cacert`` option. It will then verify that the
+server's certificate is contained in the file passed to this option, or signed
+by a CA certificate in the file. In this case, the system CA certificates are
+not considered at all.
 
 REST server uses exactly the same directory structure as local backend,
 so you should be able to access it both locally and via HTTP, even
@@ -306,8 +313,8 @@ bucket does not exist yet, it will be created:
     Please note that knowledge of your password is required to access the repository.
     Losing your password means that your data is irrecoverably lost.
 
-The number of concurrent connections to the B2 service can be set with the `-o
-b2.connections=10`. By default, at most five parallel connections are
+The number of concurrent connections to the B2 service can be set with the ``-o
+b2.connections=10``. By default, at most five parallel connections are
 established.
 
 Microsoft Azure Blob Storage
@@ -321,7 +328,7 @@ account name and key as follows:
     $ export AZURE_ACCOUNT_NAME=<ACCOUNT_NAME>
     $ export AZURE_ACCOUNT_KEY=<SECRET_KEY>
 
-Afterwards you can initialize a repository in a container called `foo` in the
+Afterwards you can initialize a repository in a container called ``foo`` in the
 root path like this:
 
 .. code-block:: console
@@ -334,7 +341,7 @@ root path like this:
     [...]
 
 The number of concurrent connections to the Azure Blob Storage service can be set with the
-`-o azure.connections=10`. By default, at most five parallel connections are
+``-o azure.connections=10``. By default, at most five parallel connections are
 established.
 
 Google Cloud Storage
@@ -362,8 +369,13 @@ key file and the project ID as follows:
     $ export GOOGLE_PROJECT_ID=123123123123
     $ export GOOGLE_APPLICATION_CREDENTIALS=$HOME/.config/gs-secret-restic-key.json
 
-Then you can use the ``gs:`` backend type to create a new repository in the
-bucket `foo` at the root path:
+Restic uses  Google's client library to generate `default authentication material`_,
+which means if you're running in Google Container Engine or are otherwise
+located on an instance with default service accounts then these should work out
+the box.
+
+Once authenticated, you can use the ``gs:`` backend type to create a new
+repository in the bucket ``foo`` at the root path:
 
 .. code-block:: console
 
@@ -375,11 +387,117 @@ bucket `foo` at the root path:
     [...]
 
 The number of concurrent connections to the GCS service can be set with the
-`-o gs.connections=10`. By default, at most five parallel connections are
+``-o gs.connections=10``. By default, at most five parallel connections are
 established.
 
 .. _service account: https://cloud.google.com/storage/docs/authentication#service_accounts
 .. _create a service account key: https://cloud.google.com/storage/docs/authentication#generating-a-private-key
+.. _default authentication material: https://developers.google.com/identity/protocols/application-default-credentials
+
+Other Services via rclone
+*************************
+
+The program `rclone`_ can be used to access many other different services and
+store data there. First, you need to install and `configure`_ rclone.  The
+general backend specification format is ``rclone:<remote>:<path>``, the
+``<remote>:<path>`` component will be directly passed to rclone. When you
+configure a remote named ``foo``, you can then call restic as follows to
+initiate a new repository in the path ``bar`` in the repo:
+
+.. code-block:: console
+
+    $ restic -r rclone:foo:bar init
+
+Restic takes care of starting and stopping rclone.
+
+As a more concrete example, suppose you have configured a remote named
+``b2prod`` for Backblaze B2 with rclone, with a bucket called ``yggdrasil``.
+You can then use rclone to list files in the bucket like this:
+
+.. code-block:: console
+
+    $ rclone ls b2prod:yggdrasil
+
+In order to create a new repository in the root directory of the bucket, call
+restic like this:
+
+.. code-block:: console
+
+    $ restic -r rclone:b2prod:yggdrasil init
+
+If you want to use the path ``foo/bar/baz`` in the bucket instead, pass this to
+restic:
+
+.. code-block:: console
+
+    $ restic -r rclone:b2prod:yggdrasil/foo/bar/baz init
+
+Listing the files of an empty repository directly with rclone should return a
+listing similar to the following:
+
+.. code-block:: console
+
+    $ rclone ls b2prod:yggdrasil/foo/bar/baz
+        155 bar/baz/config
+        448 bar/baz/keys/4bf9c78049de689d73a56ed0546f83b8416795295cda12ec7fb9465af3900b44
+
+Rclone can be `configured with environment variables`_, so for instance
+configuring a bandwidth limit for rclone can be achieved by setting the
+``RCLONE_BWLIMIT`` environment variable:
+
+.. code-block:: console
+
+    $ export RCLONE_BWLIMIT=1M
+
+For debugging rclone, you can set the environment variable ``RCLONE_VERBOSE=2``.
+
+The rclone backend has two additional options:
+
+ * ``-o rclone.program`` specifies the path to rclone, the default value is just ``rclone``
+ * ``-o rclone.args`` allows setting the arguments passed to rclone, by default this is ``serve restic --stdio --b2-hard-delete --drive-use-trash=false``
+
+The reason for the two last parameters (``--b2-hard-delete`` and
+``--drive-use-trash=false``) can be found in the corresponding GitHub `issue #1657`_.
+
+In order to start rclone, restic will build a list of arguments by joining the
+following lists (in this order): ``rclone.program``, ``rclone.args`` and as the
+last parameter the value that follows the ``rclone:`` prefix of the repository
+specification.
+
+So, calling restic like this
+
+.. code-block:: console
+
+    $ restic -o rclone.program="/path/to/rclone" \
+      -o rclone.args="serve restic --stdio --bwlimit 1M --b2-hard-delete --verbose" \
+      -r rclone:b2:foo/bar
+
+runs rclone as follows:
+
+.. code-block:: console
+
+    $ /path/to/rclone serve restic --stdio --bwlimit 1M --b2-hard-delete --verbose b2:foo/bar
+
+Manually setting ``rclone.program`` also allows running a remote instance of
+rclone e.g. via SSH on a server, for example:
+
+.. code-block:: console
+
+    $ restic -o rclone.program="ssh user@host rclone" -r rclone:b2:foo/bar
+
+The rclone command may also be hard-coded in the SSH configuration or the
+user's public key, in this case it may be sufficient to just start the SSH
+connection (and it's irrelevant what's passed after ``rclone:`` in the
+repository specification):
+
+.. code-block:: console
+
+    $ restic -o rclone.program="ssh user@host" -r rclone:x
+
+.. _rclone: https://rclone.org/
+.. _configure: https://rclone.org/docs/
+.. _configured with environment variables: https://rclone.org/docs/#environment-variables
+.. _issue #1657: https://github.com/restic/restic/pull/1657#issuecomment-377707486
 
 Password prompt on Windows
 **************************
@@ -398,5 +516,5 @@ On MSYS2, you can install ``winpty`` as follows:
 .. code-block:: console
 
     $ pacman -S winpty
-    $ winpty restic -r /tmp/backup init
+    $ winpty restic -r /srv/restic-repo init
 

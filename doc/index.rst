@@ -12,8 +12,10 @@ Restic Documentation
    050_restore
    060_forget
    070_encryption
+   075_scripting
    080_examples
    090_participating
    100_references
+   110_talks
    faq
    manual_rest

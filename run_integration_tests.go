@@ -25,6 +25,17 @@ var ForbiddenImports = map[string]bool{
 	"errors": true,
 }
 
+// CloudBackends contains a map of backend tests for cloud services to one
+// of the essential environment variables which must be present in order to
+// test it.
+var CloudBackends = map[string]string{
+	"restic/backend/s3.TestBackendS3":       "RESTIC_TEST_S3_REPOSITORY",
+	"restic/backend/swift.TestBackendSwift": "RESTIC_TEST_SWIFT",
+	"restic/backend/b2.TestBackendB2":       "RESTIC_TEST_B2_REPOSITORY",
+	"restic/backend/gs.TestBackendGS":       "RESTIC_TEST_GS_REPOSITORY",
+	"restic/backend/azure.TestBackendAzure": "RESTIC_TEST_AZURE_REPOSITORY",
+}
+
 var runCrossCompile = flag.Bool("cross-compile", true, "run cross compilation tests")
 
 func init() {
@@ -97,6 +108,7 @@ func (env *TravisEnvironment) Prepare() error {
 		"github.com/golang/dep/cmd/dep",
 		"github.com/restic/rest-server/cmd/rest-server",
 		"github.com/restic/calens",
+		"github.com/ncw/rclone",
 	}
 
 	for _, pkg := range pkgs {
@@ -124,11 +136,29 @@ func (env *TravisEnvironment) Prepare() error {
 				"openbsd/386", "openbsd/amd64",
 				"linux/arm", "freebsd/arm",
 			}
+
+			if os.Getenv("RESTIC_BUILD_SOLARIS") == "0" {
+				msg("Skipping Solaris build\n")
+			} else {
+				env.goxOSArch = append(env.goxOSArch, "solaris/amd64")
+			}
 		} else {
 			env.goxOSArch = []string{runtime.GOOS + "/" + runtime.GOARCH}
 		}
 
 		msg("gox: OS/ARCH %v\n", env.goxOSArch)
+	}
+
+	// do not run cloud tests on darwin
+	if os.Getenv("RESTIC_TEST_CLOUD_BACKENDS") == "0" {
+		msg("skipping cloud backend tests\n")
+
+		for _, name := range CloudBackends {
+			err := os.Unsetenv(name)
+			if err != nil {
+				msg("    error unsetting %v: %v\n", name, err)
+			}
+		}
 	}
 
 	// extract credentials file for GCS tests
@@ -175,15 +205,9 @@ func (env *TravisEnvironment) Teardown() error {
 
 // RunTests starts the tests for Travis.
 func (env *TravisEnvironment) RunTests() error {
-	// do not run fuse tests on darwin
-	if runtime.GOOS == "darwin" {
-		msg("skip fuse integration tests on %v\n", runtime.GOOS)
-		_ = os.Setenv("RESTIC_TEST_FUSE", "0")
-	}
-
 	env.env["GOPATH"] = os.Getenv("GOPATH")
 	if env.gcsCredentialsFile != "" {
-		env.env["RESTIC_TEST_GS_APPLICATION_CREDENTIALS"] = env.gcsCredentialsFile
+		env.env["GOOGLE_APPLICATION_CREDENTIALS"] = env.gcsCredentialsFile
 	}
 
 	// ensure that the following tests cannot be silently skipped on Travis
@@ -191,34 +215,17 @@ func (env *TravisEnvironment) RunTests() error {
 		"restic/backend/rest.TestBackendREST",
 		"restic/backend/sftp.TestBackendSFTP",
 		"restic/backend/s3.TestBackendMinio",
+		"restic/backend/rclone.TestBackendRclone",
 	}
 
-	// if the test s3 repository is available, make sure that the test is not skipped
-	if os.Getenv("RESTIC_TEST_S3_REPOSITORY") != "" {
-		ensureTests = append(ensureTests, "restic/backend/s3.TestBackendS3")
-	} else {
-		msg("S3 repository not available\n")
-	}
-
-	// if the test swift service is available, make sure that the test is not skipped
-	if os.Getenv("RESTIC_TEST_SWIFT") != "" {
-		ensureTests = append(ensureTests, "restic/backend/swift.TestBackendSwift")
-	} else {
-		msg("Swift service not available\n")
-	}
-
-	// if the test b2 repository is available, make sure that the test is not skipped
-	if os.Getenv("RESTIC_TEST_B2_REPOSITORY") != "" {
-		ensureTests = append(ensureTests, "restic/backend/b2.TestBackendB2")
-	} else {
-		msg("B2 repository not available\n")
-	}
-
-	// if the test gs repository is available, make sure that the test is not skipped
-	if os.Getenv("RESTIC_TEST_GS_REPOSITORY") != "" {
-		ensureTests = append(ensureTests, "restic/backend/gs.TestBackendGS")
-	} else {
-		msg("GS repository not available\n")
+	// make sure that cloud backends for which we have credentials are not
+	// silently skipped.
+	for pkg, env := range CloudBackends {
+		if _, ok := os.LookupEnv(env); ok {
+			ensureTests = append(ensureTests, pkg)
+		} else {
+			msg("credentials for %v are not available, skipping\n", pkg)
+		}
 	}
 
 	env.env["RESTIC_TEST_DISALLOW_SKIP"] = strings.Join(ensureTests, ",")
@@ -280,15 +287,9 @@ func (env *TravisEnvironment) RunTests() error {
 		return errors.New("CI: forbidden imports found")
 	}
 
-	// check that the man pages are up to date
-	manpath := filepath.Join("doc", "new-man")
-	if err := os.MkdirAll(manpath, 0755); err != nil {
-		return err
-	}
-
 	// check that the entries in changelog/ are valid
 	if err := run("calens"); err != nil {
-		fmt.Fprintf(os.Stderr, "calens failed, files in changelog/ are not valid\n")
+		return errors.New("calens failed, files in changelog/ are not valid")
 	}
 
 	return nil

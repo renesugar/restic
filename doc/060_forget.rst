@@ -35,7 +35,7 @@ repository like this:
 
 .. code-block:: console
 
-    $ restic -r /tmp/backup snapshots
+    $ restic -r /srv/restic-repo snapshots
     enter password for repository:
     ID        Date                 Host      Tags  Directory
     ----------------------------------------------------------------------
@@ -50,7 +50,7 @@ command and specify the snapshot ID on the command line:
 
 .. code-block:: console
 
-    $ restic -r /tmp/backup forget bdbd3439
+    $ restic -r /srv/restic-repo forget bdbd3439
     enter password for repository:
     removed snapshot d3f01f63
 
@@ -58,7 +58,7 @@ Afterwards this snapshot is removed:
 
 .. code-block:: console
 
-    $ restic -r /tmp/backup snapshots
+    $ restic -r /srv/restic-repo snapshots
     enter password for repository:
     ID        Date                 Host     Tags  Directory
     ----------------------------------------------------------------------
@@ -73,7 +73,7 @@ command must be run:
 
 .. code-block:: console
 
-    $ restic -r /tmp/backup prune
+    $ restic -r /srv/restic-repo prune
     enter password for repository:
 
     counting files in repo
@@ -159,6 +159,13 @@ The ``forget`` command accepts the following parameters:
    snapshots, only keep the last one for that year.
 -  ``--keep-tag`` keep all snapshots which have all tags specified by
    this option (can be specified multiple times).
+-  ``--keep-within duration`` keep all snapshots which have been made within
+   the duration of the latest snapshot. ``duration`` needs to be a number of
+   years, months, and days, e.g. ``2y5m7d`` will keep all snapshots made in the
+   two years, five months, and seven days before the latest snapshot.
+
+Multiple policies will be ORed together so as to be as inclusive as possible
+for keeping snapshots.
 
 Additionally, you can restrict removing snapshots to those which have a
 particular hostname with the ``--hostname`` parameter, or tags with the

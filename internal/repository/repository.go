@@ -214,11 +214,11 @@ func (r *Repository) SaveAndEncrypt(ctx context.Context, t restic.BlobType, data
 
 	// get buf from the pool
 	ciphertext := getBuf()
-	defer freeBuf(ciphertext)
 
 	ciphertext = ciphertext[:0]
 	nonce := crypto.NewRandomNonce()
 	ciphertext = append(ciphertext, nonce...)
+	defer freeBuf(ciphertext)
 
 	// encrypt blob
 	ciphertext = r.key.Seal(ciphertext, nonce, data, nil)
@@ -282,7 +282,7 @@ func (r *Repository) SaveUnpacked(ctx context.Context, t restic.FileType, p []by
 	id = restic.Hash(ciphertext)
 	h := restic.Handle{Type: t, Name: id.String()}
 
-	err = r.be.Save(ctx, h, bytes.NewReader(ciphertext))
+	err = r.be.Save(ctx, h, restic.NewByteReader(ciphertext))
 	if err != nil {
 		debug.Log("error saving blob %v: %v", h, err)
 		return restic.ID{}, err
@@ -331,8 +331,20 @@ func (r *Repository) Index() restic.Index {
 }
 
 // SetIndex instructs the repository to use the given index.
-func (r *Repository) SetIndex(i restic.Index) {
+func (r *Repository) SetIndex(i restic.Index) error {
 	r.idx = i.(*MasterIndex)
+
+	ids := restic.NewIDSet()
+	for _, idx := range r.idx.All() {
+		id, err := idx.ID()
+		if err != nil {
+			debug.Log("not using index, ID() returned error %v", err)
+			continue
+		}
+		ids.Insert(id)
+	}
+
+	return r.PrepareCache(ids)
 }
 
 // SaveIndex saves an index in the repository.
@@ -413,51 +425,70 @@ func (r *Repository) LoadIndex(ctx context.Context) error {
 		r.idx.Insert(idx)
 	}
 
-	if r.Cache != nil {
-		// clear old index files
-		err := r.Cache.Clear(restic.IndexFile, validIndex)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error clearing index files in cache: %v\n", err)
-		}
+	err := r.PrepareCache(validIndex)
+	if err != nil {
+		return err
+	}
 
-		packs := restic.NewIDSet()
-		for _, idx := range r.idx.All() {
-			for id := range idx.Packs() {
-				packs.Insert(id)
-			}
-		}
+	return <-errCh
+}
 
-		// clear old data files
-		err = r.Cache.Clear(restic.DataFile, packs)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error clearing data files in cache: %v\n", err)
-		}
+// PrepareCache initializes the local cache. indexIDs is the list of IDs of
+// index files still present in the repo.
+func (r *Repository) PrepareCache(indexIDs restic.IDSet) error {
+	if r.Cache == nil {
+		return nil
+	}
 
-		treePacks := restic.NewIDSet()
-		for _, idx := range r.idx.All() {
-			for _, id := range idx.TreePacks() {
-				treePacks.Insert(id)
-			}
-		}
+	debug.Log("prepare cache with %d index files", len(indexIDs))
 
-		// use readahead
-		cache := r.Cache.(*cache.Cache)
-		cache.PerformReadahead = func(h restic.Handle) bool {
-			if h.Type != restic.DataFile {
-				return false
-			}
+	// clear old index files
+	err := r.Cache.Clear(restic.IndexFile, indexIDs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error clearing index files in cache: %v\n", err)
+	}
 
-			id, err := restic.ParseID(h.Name)
-			if err != nil {
-				return false
-			}
-
-			return treePacks.Has(id)
+	packs := restic.NewIDSet()
+	for _, idx := range r.idx.All() {
+		for id := range idx.Packs() {
+			packs.Insert(id)
 		}
 	}
 
-	if err := <-errCh; err != nil {
-		return err
+	// clear old data files
+	err = r.Cache.Clear(restic.DataFile, packs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error clearing data files in cache: %v\n", err)
+	}
+
+	treePacks := restic.NewIDSet()
+	for _, idx := range r.idx.All() {
+		for _, id := range idx.TreePacks() {
+			treePacks.Insert(id)
+		}
+	}
+
+	// use readahead
+	debug.Log("using readahead")
+	cache := r.Cache.(*cache.Cache)
+	cache.PerformReadahead = func(h restic.Handle) bool {
+		if h.Type != restic.DataFile {
+			debug.Log("no readahead for %v, is not data file", h)
+			return false
+		}
+
+		id, err := restic.ParseID(h.Name)
+		if err != nil {
+			debug.Log("no readahead for %v, invalid ID", h)
+			return false
+		}
+
+		if treePacks.Has(id) {
+			debug.Log("perform readahead for %v", h)
+			return true
+		}
+		debug.Log("no readahead for %v, not tree file", h)
+		return false
 	}
 
 	return nil
@@ -491,7 +522,10 @@ func (r *Repository) SearchKey(ctx context.Context, password string, maxKeys int
 	r.treePM.key = key.master
 	r.keyName = key.Name()
 	r.cfg, err = restic.LoadConfig(ctx, r)
-	return err
+	if err != nil {
+		return errors.Fatalf("config cannot be loaded: %v", err)
+	}
+	return nil
 }
 
 // Init creates a new master key with the supplied password, initializes and

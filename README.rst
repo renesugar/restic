@@ -29,7 +29,7 @@ and add some data:
 
 .. code-block:: console
 
-    $ restic -r /tmp/backup backup ~/work
+    $ restic --repo /tmp/backup backup ~/work
     enter password for repository:
     scan [/home/user/work]
     scanned 764 directories, 1816 files in 0:00
@@ -57,6 +57,7 @@ Therefore, restic supports the following backends for storing backups natively:
 - `BackBlaze B2 <https://restic.readthedocs.io/en/latest/030_preparing_a_new_repo.html#backblaze-b2>`__
 - `Microsoft Azure Blob Storage <https://restic.readthedocs.io/en/latest/030_preparing_a_new_repo.html#microsoft-azure-blob-storage>`__
 - `Google Cloud Storage <https://restic.readthedocs.io/en/latest/030_preparing_a_new_repo.html#google-cloud-storage>`__
+- And many other services via the `rclone <https://rclone.org>`__ `Backend <https://restic.readthedocs.io/en/latest/030_preparing_a_new_repo.html#other-services-via-rclone>`__
 
 Design Principles
 -----------------
@@ -112,8 +113,8 @@ complete text in ``LICENSE``.
 
 .. |Documentation| image:: https://readthedocs.org/projects/restic/badge/?version=latest
    :target: https://restic.readthedocs.io/en/latest/?badge=latest
-.. |Build Status| image:: https://travis-ci.org/restic/restic.svg?branch=master
-   :target: https://travis-ci.org/restic/restic
+.. |Build Status| image:: https://travis-ci.com/restic/restic.svg?branch=master
+   :target: https://travis-ci.com/restic/restic
 .. |Build status| image:: https://ci.appveyor.com/api/projects/status/nuy4lfbgfbytw92q/branch/master?svg=true
    :target: https://ci.appveyor.com/project/fd0/restic/branch/master
 .. |Report Card| image:: https://goreportcard.com/badge/github.com/restic/restic

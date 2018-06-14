@@ -40,13 +40,15 @@ func open(cfg Config, rt http.RoundTripper) (*Backend, error) {
 		minio.MaxRetry = int(cfg.MaxRetries)
 	}
 
-	// Chains all credential types, starting with
-	// Static credentials provided by user.
-	// IAM profile based credentials. (performs an HTTP
-	// call to a pre-defined endpoint, only valid inside
-	// configured ec2 instances)
-	// AWS env variables such as AWS_ACCESS_KEY_ID
-	// Minio env variables such as MINIO_ACCESS_KEY
+	// Chains all credential types, in the following order:
+	// 	- Static credentials provided by user
+	//	- AWS env vars (i.e. AWS_ACCESS_KEY_ID)
+	//  - Minio env vars (i.e. MINIO_ACCESS_KEY)
+	//  - AWS creds file (i.e. AWS_SHARED_CREDENTIALS_FILE or ~/.aws/credentials)
+	//  - Minio creds file (i.e. MINIO_SHARED_CREDENTIALS_FILE or ~/.mc/config.json)
+	//  - IAM profile based credentials. (performs an HTTP
+	//    call to a pre-defined endpoint, only valid inside
+	//    configured ec2 instances)
 	creds := credentials.NewChainCredentials([]credentials.Provider{
 		&credentials.Static{
 			Value: credentials.Value{
@@ -54,13 +56,15 @@ func open(cfg Config, rt http.RoundTripper) (*Backend, error) {
 				SecretAccessKey: cfg.Secret,
 			},
 		},
+		&credentials.EnvAWS{},
+		&credentials.EnvMinio{},
+		&credentials.FileAWSCredentials{},
+		&credentials.FileMinioClient{},
 		&credentials.IAM{
 			Client: &http.Client{
 				Transport: http.DefaultTransport,
 			},
 		},
-		&credentials.EnvAWS{},
-		&credentials.EnvMinio{},
 	})
 	client, err := minio.NewWithCredentials(cfg.Endpoint, creds, !cfg.UseHTTP, "")
 	if err != nil {
@@ -104,6 +108,12 @@ func Create(cfg Config, rt http.RoundTripper) (restic.Backend, error) {
 		return nil, errors.Wrap(err, "open")
 	}
 	found, err := be.client.BucketExists(cfg.Bucket)
+
+	if err != nil && be.IsAccessDenied(err) {
+		err = nil
+		found = true
+	}
+
 	if err != nil {
 		debug.Log("BucketExists(%v) returned err %v", cfg.Bucket, err)
 		return nil, errors.Wrap(err, "client.BucketExists")
@@ -118,6 +128,17 @@ func Create(cfg Config, rt http.RoundTripper) (restic.Backend, error) {
 	}
 
 	return be, nil
+}
+
+// IsAccessDenied returns true if the error is caused by Access Denied.
+func (be *Backend) IsAccessDenied(err error) bool {
+	debug.Log("IsAccessDenied(%T, %#v)", err, err)
+
+	if e, ok := errors.Cause(err).(minio.ErrorResponse); ok && e.Code == "AccessDenied" {
+		return true
+	}
+
+	return false
 }
 
 // IsNotExist returns true if the error is caused by a not existing file.
@@ -167,6 +188,10 @@ func (be *Backend) ReadDir(dir string) (list []os.FileInfo, err error) {
 	defer close(done)
 
 	for obj := range be.client.ListObjects(be.cfg.Bucket, dir, false, done) {
+		if obj.Err != nil {
+			return nil, err
+		}
+
 		if obj.Key == "" {
 			continue
 		}
@@ -223,7 +248,7 @@ func lenForFile(f *os.File) (int64, error) {
 }
 
 // Save stores data in the backend at the handle.
-func (be *Backend) Save(ctx context.Context, h restic.Handle, rd io.Reader) (err error) {
+func (be *Backend) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
 	debug.Log("Save %v", h)
 
 	if err := h.Valid(); err != nil {
@@ -235,27 +260,11 @@ func (be *Backend) Save(ctx context.Context, h restic.Handle, rd io.Reader) (err
 	be.sem.GetToken()
 	defer be.sem.ReleaseToken()
 
-	var size int64 = -1
-
-	type lenner interface {
-		Len() int
-	}
-
-	// find size for reader
-	if f, ok := rd.(*os.File); ok {
-		size, err = lenForFile(f)
-		if err != nil {
-			return err
-		}
-	} else if l, ok := rd.(lenner); ok {
-		size = int64(l.Len())
-	}
-
 	opts := minio.PutObjectOptions{}
 	opts.ContentType = "application/octet-stream"
 
-	debug.Log("PutObject(%v, %v, %v)", be.cfg.Bucket, objName, size)
-	n, err := be.client.PutObjectWithContext(ctx, be.cfg.Bucket, objName, ioutil.NopCloser(rd), size, opts)
+	debug.Log("PutObject(%v, %v, %v)", be.cfg.Bucket, objName, rd.Length())
+	n, err := be.client.PutObjectWithContext(ctx, be.cfg.Bucket, objName, ioutil.NopCloser(rd), int64(rd.Length()), opts)
 
 	debug.Log("%v -> %v bytes, err %#v: %v", objName, n, err, err)
 
@@ -419,6 +428,10 @@ func (be *Backend) List(ctx context.Context, t restic.FileType, fn func(restic.F
 	listresp := be.client.ListObjects(be.cfg.Bucket, prefix, recursive, ctx.Done())
 
 	for obj := range listresp {
+		if obj.Err != nil {
+			return obj.Err
+		}
+
 		m := strings.TrimPrefix(obj.Key, prefix)
 		if m == "" {
 			continue

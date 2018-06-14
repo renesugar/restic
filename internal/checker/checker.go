@@ -164,7 +164,11 @@ func (c *Checker) LoadIndex(ctx context.Context) (hints []error, errs []error) {
 		}
 	}
 
-	c.repo.SetIndex(c.masterIndex)
+	err := c.repo.SetIndex(c.masterIndex)
+	if err != nil {
+		debug.Log("SetIndex returned error: %v", err)
+		errs = append(errs, err)
+	}
 
 	return hints, errs
 }
@@ -177,7 +181,17 @@ type PackError struct {
 }
 
 func (e PackError) Error() string {
-	return "pack " + e.ID.String() + ": " + e.Err.Error()
+	return "pack " + e.ID.Str() + ": " + e.Err.Error()
+}
+
+// IsOrphanedPack returns true if the error describes a pack which is not
+// contained in any index.
+func IsOrphanedPack(err error) bool {
+	if e, ok := errors.Cause(err).(PackError); ok && e.Orphaned {
+		return true
+	}
+
+	return false
 }
 
 // Packs checks that all packs referenced in the index are still available and
@@ -555,12 +569,24 @@ func (c *Checker) checkTree(id restic.ID, tree *restic.Tree) (errs []error) {
 				errs = append(errs, Error{TreeID: id, Err: errors.Errorf("file %q has nil blob list", node.Name)})
 			}
 
+			var size uint64
 			for b, blobID := range node.Content {
 				if blobID.IsNull() {
 					errs = append(errs, Error{TreeID: id, Err: errors.Errorf("file %q blob %d has null ID", node.Name, b)})
 					continue
 				}
 				blobs = append(blobs, blobID)
+				blobSize, found := c.repo.LookupBlobSize(blobID, restic.DataBlob)
+				if !found {
+					errs = append(errs, Error{TreeID: id, Err: errors.Errorf("file %q blob %d size could not be found", node.Name, b)})
+				}
+				size += uint64(blobSize)
+			}
+			if size != node.Size {
+				errs = append(errs, Error{
+					TreeID: id,
+					Err:    errors.Errorf("file %q: metadata size (%v) and sum of blob sizes (%v) do not match", node.Name, node.Size, size),
+				})
 			}
 		case "dir":
 			if node.Subtree == nil {

@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -116,8 +115,11 @@ func OpenKey(ctx context.Context, s *Repository, name string, password string) (
 func SearchKey(ctx context.Context, s *Repository, password string, maxKeys int) (k *Key, err error) {
 	checked := 0
 
-	// try at most maxKeysForSearch keys in repo
-	err = s.Backend().List(ctx, restic.KeyFile, func(fi restic.FileInfo) error {
+	listCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// try at most maxKeys keys in repo
+	err = s.Backend().List(listCtx, restic.KeyFile, func(fi restic.FileInfo) error {
 		if maxKeys > 0 && checked > maxKeys {
 			return ErrMaxKeysReached
 		}
@@ -143,8 +145,13 @@ func SearchKey(ctx context.Context, s *Repository, password string, maxKeys int)
 
 		debug.Log("successfully opened key %v", fi.Name)
 		k = key
+		cancel()
 		return nil
 	})
+
+	if err == context.Canceled {
+		err = nil
+	}
 
 	if err != nil {
 		return nil, err
@@ -250,7 +257,7 @@ func AddKey(ctx context.Context, s *Repository, password string, template *crypt
 		Name: restic.Hash(buf).String(),
 	}
 
-	err = s.be.Save(ctx, h, bytes.NewReader(buf))
+	err = s.be.Save(ctx, h, restic.NewByteReader(buf))
 	if err != nil {
 		return nil, err
 	}

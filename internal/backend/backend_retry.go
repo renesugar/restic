@@ -8,7 +8,6 @@ import (
 
 	"github.com/cenkalti/backoff"
 	"github.com/restic/restic/internal/debug"
-	"github.com/restic/restic/internal/errors"
 	"github.com/restic/restic/internal/restic"
 )
 
@@ -35,7 +34,7 @@ func NewRetryBackend(be restic.Backend, maxTries int, report func(string, error,
 
 func (be *RetryBackend) retry(ctx context.Context, msg string, f func() error) error {
 	err := backoff.RetryNotify(f,
-		backoff.WithContext(backoff.WithMaxTries(backoff.NewExponentialBackOff(), uint64(be.MaxTries)), ctx),
+		backoff.WithContext(backoff.WithMaxRetries(backoff.NewExponentialBackOff(), uint64(be.MaxTries)), ctx),
 		func(err error, d time.Duration) {
 			if be.Report != nil {
 				be.Report(msg, err, d)
@@ -47,23 +46,9 @@ func (be *RetryBackend) retry(ctx context.Context, msg string, f func() error) e
 }
 
 // Save stores the data in the backend under the given handle.
-func (be *RetryBackend) Save(ctx context.Context, h restic.Handle, rd io.Reader) error {
-	seeker, ok := rd.(io.Seeker)
-	if !ok {
-		return errors.Errorf("reader %T is not a seeker", rd)
-	}
-
-	pos, err := seeker.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return errors.Wrap(err, "Seek")
-	}
-
-	if pos != 0 {
-		return errors.Errorf("reader is not at the beginning (pos %v)", pos)
-	}
-
+func (be *RetryBackend) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
 	return be.retry(ctx, fmt.Sprintf("Save(%v)", h), func() error {
-		_, err := seeker.Seek(0, io.SeekStart)
+		err := rd.Rewind()
 		if err != nil {
 			return err
 		}
